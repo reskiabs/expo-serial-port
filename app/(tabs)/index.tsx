@@ -41,7 +41,7 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>🔌 Serial Command</Text>
+      <Text style={styles.title}>Serial Command</Text>
 
       <TextInput
         style={styles.input}

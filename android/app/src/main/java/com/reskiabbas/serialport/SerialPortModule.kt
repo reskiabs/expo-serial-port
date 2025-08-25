@@ -20,25 +20,72 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
     private var serialPort: UsbSerialPort? = null
     private var readJob: Job? = null
 
+    private val ACTION_USB_PERMISSION = "com.example.serialport.USB_PERMISSION"
+
+   private val usbReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_USB_PERMISSION) {
+            synchronized(this) {
+                val device: UsbDevice? =
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                    }
+
+                if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                    device?.let { openSerialPort(it) }
+                } else {
+                    sendEvent("onError", "USB Permission denied")
+                }
+            }
+        }
+    }
+}
+
     override fun getName(): String = "SerialPortModule"
 
     @ReactMethod
     fun initSerialPort(baudRate: Int, promise: Promise) {
-        try {
-            usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-            val availableDrivers = com.hoho.android.usbserial.driver.UsbSerialProber.getDefaultProber()
-                .findAllDrivers(usbManager)
+        usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
 
-            if (availableDrivers.isEmpty()) {
-                promise.reject("NO_DEVICE", "No USB device found")
+        if (availableDrivers.isEmpty()) {
+            promise.reject("NO_DEVICE", "No USB device found")
+            return
+        }
+
+        val driver = availableDrivers[0]
+
+        // Register broadcast receiver
+        context.registerReceiver(usbReceiver, IntentFilter(ACTION_USB_PERMISSION))
+
+        val permissionIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(ACTION_USB_PERMISSION),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        if (usbManager?.hasPermission(driver.device) == true) {
+            openSerialPort(driver.device, baudRate, promise)
+        } else {
+            usbManager?.requestPermission(driver.device, permissionIntent)
+        }
+    }
+
+    private fun openSerialPort(device: UsbDevice, baudRate: Int = 9600, promise: Promise? = null) {
+        try {
+            val driver = UsbSerialProber.getDefaultProber().probeDevice(device)
+            if (driver == null) {
+                promise?.reject("NO_DRIVER", "No driver for device")
                 return
             }
 
-            val driver = availableDrivers[0]
-            connection = usbManager?.openDevice(driver.device)
-
+            connection = usbManager?.openDevice(device)
             if (connection == null) {
-                promise.reject("NO_PERMISSION", "No permission to open USB device")
+                promise?.reject("OPEN_FAILED", "Failed to open device connection")
                 return
             }
 
@@ -46,16 +93,15 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
             serialPort?.open(connection)
             serialPort?.setParameters(
                 baudRate,
-                8, // data bits
+                8,
                 UsbSerialPort.STOPBITS_1,
                 UsbSerialPort.PARITY_NONE
             )
 
             startReading()
-
-            promise.resolve("✅ Serial initialized with baud $baudRate")
+            promise?.resolve("✅ Serial initialized with baud $baudRate")
         } catch (e: Exception) {
-            promise.reject("INIT_ERROR", e.message, e)
+            promise?.reject("INIT_ERROR", e.message, e)
         }
     }
 
@@ -100,11 +146,15 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit(event, data)
     }
-
-    override fun onCatalystInstanceDestroy() {
+    override fun invalidate() {
+    try {
         readJob?.cancel()
         serialPort?.close()
         connection?.close()
-        super.onCatalystInstanceDestroy()
+        context.unregisterReceiver(usbReceiver)
+    } catch (_: Exception) {
     }
+    super.invalidate()
 }
+}
+
