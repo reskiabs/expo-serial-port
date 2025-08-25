@@ -1,4 +1,4 @@
-package com.example.serialport
+package com.reskiabbas.serialport
 
 import android.app.PendingIntent
 import android.content.*
@@ -20,7 +20,7 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
     private var serialPort: UsbSerialPort? = null
     private var readJob: Job? = null
 
-    private val ACTION_USB_PERMISSION = "com.example.serialport.USB_PERMISSION"
+    private val ACTION_USB_PERMISSION = "com.reskiabbas.serialport.USB_PERMISSION"
 
    private val usbReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

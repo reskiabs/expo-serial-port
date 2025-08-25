@@ -1,4 +1,4 @@
-package com.example.serialport
+package com.reskiabbas.serialport
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
