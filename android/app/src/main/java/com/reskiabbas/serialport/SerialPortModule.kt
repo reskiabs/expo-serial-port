@@ -22,27 +22,47 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
 
     private val ACTION_USB_PERMISSION = "com.reskiabbas.serialport.USB_PERMISSION"
 
-   private val usbReceiver = object : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == ACTION_USB_PERMISSION) {
-            synchronized(this) {
-                val device: UsbDevice? =
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    }
+    // 🔧 Untuk pending connect (kalau belum ada permission)
+    private var pendingPromise: Promise? = null
+    private var pendingBaudRate: Int = 9600
 
-                if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                    device?.let { openSerialPort(it) }
-                } else {
-                    sendEvent("onError", "USB Permission denied")
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                ACTION_USB_PERMISSION -> {
+                    synchronized(this) {
+                        val device: UsbDevice? =
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                            }
+
+                        if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                            device?.let {
+                                openSerialPort(it, pendingBaudRate, pendingPromise)
+                                pendingPromise = null
+                            }
+                        } else {
+                            pendingPromise?.reject("PERMISSION_DENIED", "USB Permission denied")
+                            sendEvent("onError", "USB Permission denied")
+                            pendingPromise = null
+                        }
+                    }
+                }
+
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    sendEvent("onDeviceAttached", "USB device attached")
+                }
+
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    closeSerial()
+                    sendEvent("onDeviceDetached", "USB device detached")
                 }
             }
         }
     }
-}
 
     override fun getName(): String = "SerialPortModule"
 
@@ -58,19 +78,34 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
 
         val driver = availableDrivers[0]
 
-        // Register broadcast receiver
-        context.registerReceiver(usbReceiver, IntentFilter(ACTION_USB_PERMISSION))
+        // ✅ Register broadcast receiver untuk USB permission & attach/detach event
+        val filter = IntentFilter().apply {
+            addAction(ACTION_USB_PERMISSION)
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
 
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(usbReceiver, filter)
+        }
+
+        // ✅ PendingIntent dengan flag aman di Android 12+
         val permissionIntent = PendingIntent.getBroadcast(
             context,
             0,
             Intent(ACTION_USB_PERMISSION),
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         if (usbManager?.hasPermission(driver.device) == true) {
             openSerialPort(driver.device, baudRate, promise)
         } else {
+            // simpan promise & baudRate untuk resolve setelah permission diberikan
+            pendingPromise = promise
+            pendingBaudRate = baudRate
             usbManager?.requestPermission(driver.device, permissionIntent)
         }
     }
@@ -141,20 +176,29 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    private fun closeSerial() {
+        try {
+            readJob?.cancel()
+            serialPort?.close()
+            connection?.close()
+            serialPort = null
+            connection = null
+        } catch (_: Exception) {
+        }
+    }
+
     private fun sendEvent(event: String, data: String) {
         context
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit(event, data)
     }
-    override fun invalidate() {
-    try {
-        readJob?.cancel()
-        serialPort?.close()
-        connection?.close()
-        context.unregisterReceiver(usbReceiver)
-    } catch (_: Exception) {
-    }
-    super.invalidate()
-}
-}
 
+    override fun invalidate() {
+        try {
+            closeSerial()
+            context.unregisterReceiver(usbReceiver)
+        } catch (_: Exception) {
+        }
+        super.invalidate()
+    }
+}
