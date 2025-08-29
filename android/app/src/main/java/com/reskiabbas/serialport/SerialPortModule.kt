@@ -156,17 +156,28 @@ class SerialPortModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // 🔄 Menggunakan StringBuilder strategy dari Document 1
     private fun startReading() {
         val port = serialPort ?: return
         readJob = CoroutineScope(Dispatchers.IO).launch {
             val buffer = ByteArray(1024)
+            val stringBuilder = StringBuilder()
             try {
                 while (isActive) {
                     val len = port.read(buffer, 1000)
                     if (len > 0) {
                         val data = String(buffer, 0, len)
-                        Log.d("SerialPort", "📩 Received: $data")
-                        sendEvent("onReadData", data)
+                        stringBuilder.append(data)
+
+                        // cek kalau ada terminator (misal newline)
+                        if (data.contains("\n")) {
+                            val fullMessage = stringBuilder.toString().trim()
+                            Log.d("SerialPort", "📩 Received Full: $fullMessage")
+                            sendEvent("onReadData", fullMessage)
+
+                            // reset buffer setelah dikirim
+                            stringBuilder.clear()
+                        }
                     }
                 }
             } catch (e: Exception) {
